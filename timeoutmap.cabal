@@ -1,0 +1,39 @@
+name:           timeoutmap
+version:        0.1
+synopsis:       A map whose entries "expire" if not renewed in time
+license:        MPL-2.0
+license-file:   LICENSE
+author:         Shane O'Brien
+maintainer:     me@shane.sh
+stability:      Experimental
+category:       Web
+cabal-version:  >= 1.6
+build-type:     Simple
+homepage:       https://github.com/duairc/timeoutmap
+bug-reports:    https://github.com/duairc/timeoutmap/issues
+
+extra-source-files:
+  LICENSE
+
+library
+  hs-source-dirs:
+    src
+
+  exposed-modules:
+    Data.TimeoutMap
+
+  build-depends:
+    aeson,
+    base < 5,
+    deepseq,
+    hashable,
+    hashable-time,
+    time,
+    transformers,
+    unordered-containers
+
+  ghc-options: -Wall
+
+source-repository head
+  type:     git
+  location: https://github.com/duairc/timeoutmap.git
