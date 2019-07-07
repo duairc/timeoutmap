@@ -1,9 +1,10 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
 
 module Data.TimeoutMap
-    ( TimeoutMap
+    ( TimeoutMap, toList
     , lookup
     , insert, renew
     , adjust, update
@@ -20,8 +21,9 @@ import           Data.Aeson
 
 
 -- base ----------------------------------------------------------------------
+import           Control.Applicative (empty)
 import           Data.Bifunctor (bimap, first, second)
-import           Data.Maybe (fromJust)
+import           Data.Maybe (fromJust, mapMaybe)
 import           Data.Semigroup (Semigroup)
 import           Data.Typeable (Typeable)
 import           GHC.Generics (Generic)
@@ -54,12 +56,21 @@ newtype TimeoutMap k a = TimeoutMap (HashMap k (a, UTCTime))
   deriving
     ( Eq, Ord, Read, Show, Semigroup, Monoid, Generic, Typeable
     , NFData, Hashable, FromJSON
+    , Functor
     )
 
 
 ------------------------------------------------------------------------------
 instance (ToJSONKey k, ToJSON a) => ToJSON (TimeoutMap k a) where
     toEncoding = genericToEncoding defaultOptions
+
+
+------------------------------------------------------------------------------
+toList :: UTCTime -> TimeoutMap k a -> [(k, a)]
+toList now (TimeoutMap as) = mapMaybe go $ H.toList as
+  where
+    go (k, (a, t)) | t >= now = pure (k, a)
+    go _ = empty
 
 
 ------------------------------------------------------------------------------
