@@ -4,7 +4,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Data.TimeoutMap
-    ( TimeoutMap, toList
+    ( TimeoutMap (TimeoutMap), toList
     , lookup
     , insert, renew
     , adjust, update
