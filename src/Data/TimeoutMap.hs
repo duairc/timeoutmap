@@ -54,7 +54,7 @@ import qualified Data.HashMap.Strict as H
 ------------------------------------------------------------------------------
 newtype TimeoutMap k a = TimeoutMap (HashMap k (a, UTCTime))
   deriving
-    ( Eq, Ord, Read, Show, Semigroup, Monoid, Generic, Typeable
+    ( Eq, Ord, Read, Show, Generic, Typeable
     , NFData, Hashable, FromJSON
     , Functor
     )
@@ -63,6 +63,18 @@ newtype TimeoutMap k a = TimeoutMap (HashMap k (a, UTCTime))
 ------------------------------------------------------------------------------
 instance (ToJSONKey k, ToJSON a) => ToJSON (TimeoutMap k a) where
     toEncoding = genericToEncoding defaultOptions
+
+
+------------------------------------------------------------------------------
+instance (Eq k, Hashable k, Semigroup a) => Semigroup (TimeoutMap k a) where
+    TimeoutMap x <> TimeoutMap y = TimeoutMap $ H.unionWith go x y
+      where
+        go (a, s) (b, t) = (a <> b, max s t)
+
+
+------------------------------------------------------------------------------
+instance (Eq k, Hashable k, Semigroup a) => Monoid (TimeoutMap k a) where
+    mempty = TimeoutMap mempty
 
 
 ------------------------------------------------------------------------------
