@@ -4,12 +4,13 @@
 {-# LANGUAGE TupleSections #-}
 
 module Data.TimeoutMap
-    ( TimeoutMap (TimeoutMap), toList
+    ( TimeoutMap, toList
     , lookup
     , insert, renew
     , adjust, update
     , delete
     , clean
+    , mutateWith
     )
 where
 
@@ -22,9 +23,11 @@ import           Data.Aeson
 
 -- base ----------------------------------------------------------------------
 import           Control.Applicative (empty)
-import           Data.Bifunctor (bimap, first, second)
+import           Data.Bitraversable (bisequence)
+import           Data.Functor.Identity (Identity (Identity), runIdentity)
 import           Data.Maybe (fromJust, mapMaybe)
 import           Data.Semigroup (Semigroup)
+import           Data.Tuple (swap)
 import           Data.Typeable (Typeable)
 import           GHC.Generics (Generic)
 import           Prelude hiding (lookup)
@@ -53,7 +56,9 @@ import           Data.Functor.Plus (Plus, zero)
 
 
 -- time ----------------------------------------------------------------------
-import           Data.Time.Clock (UTCTime, NominalDiffTime, addUTCTime)
+import           Data.Time.Clock
+                     ( UTCTime, NominalDiffTime, addUTCTime, diffUTCTime
+                     )
 
 
 -- unordered-containers ------------------------------------------------------
@@ -62,7 +67,7 @@ import qualified Data.HashMap.Strict as H
 
 
 ------------------------------------------------------------------------------
-newtype TimeoutMap k a = TimeoutMap (HashMap k (a, UTCTime))
+newtype TimeoutMap k a = TimeoutMap (HashMap k (UTCTime, a))
   deriving
     ( Eq, Ord, Read, Show, Generic, Typeable
     , NFData, Hashable, FromJSON
@@ -73,7 +78,7 @@ newtype TimeoutMap k a = TimeoutMap (HashMap k (a, UTCTime))
 ------------------------------------------------------------------------------
 instance (Eq k, Hashable k) => Apply (TimeoutMap k) where
     liftF2 f (TimeoutMap a) (TimeoutMap b) =
-        TimeoutMap (liftF2 (biliftA2 f max) a b)
+        TimeoutMap (liftF2 (biliftA2 max f) a b)
 
 
 ------------------------------------------------------------------------------
@@ -95,7 +100,7 @@ instance (ToJSONKey k, ToJSON a) => ToJSON (TimeoutMap k a) where
 instance (Eq k, Hashable k, Semigroup a) => Semigroup (TimeoutMap k a) where
     TimeoutMap x <> TimeoutMap y = TimeoutMap $ H.unionWith go x y
       where
-        go (a, s) (b, t) = (a <> b, max s t)
+        go = biliftA2 max (<>)
 
 
 ------------------------------------------------------------------------------
@@ -107,102 +112,97 @@ instance (Eq k, Hashable k, Semigroup a) => Monoid (TimeoutMap k a) where
 toList :: UTCTime -> TimeoutMap k a -> [(k, a)]
 toList now (TimeoutMap as) = mapMaybe go $ H.toList as
   where
-    go (k, (a, t)) | t >= now = pure (k, a)
+    go (k, (t, a)) | t >= now = pure (k, a)
     go _ = empty
 
 
 ------------------------------------------------------------------------------
 lookup :: (Eq k, Hashable k)
-    => k -> UTCTime -> TimeoutMap k a -> (TimeoutMap k a, Maybe a)
-lookup = fmap fst ... mutateWith Nothing (\a -> (Just (a, Nothing), a))
+    => UTCTime -> k -> TimeoutMap k a -> (Maybe (NominalDiffTime, a))
+lookup = bisequence . snd .:. mutateWith empty (\a -> (a, pure (empty, a)))
 
 
 ------------------------------------------------------------------------------
 insert :: (Eq k, Hashable k)
-    => a -> NominalDiffTime
-    -> k -> UTCTime -> TimeoutMap k a -> (TimeoutMap k a, UTCTime)
-insert a t = fmap fromJust ... mutate (Just (a, t)) (\_ -> Just (a, Just t))
+    => NominalDiffTime -> a
+    -> UTCTime -> k -> TimeoutMap k a -> (TimeoutMap k a, NominalDiffTime)
+insert t a = fmap fromJust .:. mutate (pure (t, a)) (\_ -> pure (pure t, a))
 
 
 ------------------------------------------------------------------------------
 renew :: (Eq k, Hashable k)
     => NominalDiffTime
-    -> k -> UTCTime -> TimeoutMap k a -> (TimeoutMap k a, Maybe UTCTime)
-renew = adjust . flip (,) . Just
+    -> UTCTime -> k -> TimeoutMap k a
+    -> (TimeoutMap k a, Maybe NominalDiffTime)
+renew = adjust . (,) . pure
 
 
 ------------------------------------------------------------------------------
 adjust :: (Eq k, Hashable k)
-    => (a -> (a, Maybe NominalDiffTime))
-    -> k -> UTCTime -> TimeoutMap k a -> (TimeoutMap k a, Maybe UTCTime)
-adjust = update . (Just .)
+    => (a -> (Maybe NominalDiffTime, a))
+    -> UTCTime -> k -> TimeoutMap k a
+    -> (TimeoutMap k a, Maybe NominalDiffTime)
+adjust = update . (pure .)
 
 
 ------------------------------------------------------------------------------
 update :: (Eq k, Hashable k)
-    => (a -> Maybe (a, Maybe NominalDiffTime))
-    -> k -> UTCTime -> TimeoutMap k a -> (TimeoutMap k a, Maybe UTCTime)
-update = mutate Nothing
+    => (a -> Maybe (Maybe NominalDiffTime, a))
+    -> UTCTime -> k -> TimeoutMap k a
+    -> (TimeoutMap k a, Maybe NominalDiffTime)
+update = mutate empty
 
 
 ------------------------------------------------------------------------------
 delete :: (Eq k, Hashable k)
-    => k -> UTCTime -> TimeoutMap k a -> TimeoutMap k a
-delete = fst ... mutate Nothing (const Nothing)
+    => UTCTime -> k -> TimeoutMap k a -> TimeoutMap k a
+delete = fst .:. mutate empty (const empty)
 
 
 ------------------------------------------------------------------------------
 mutate :: (Eq k, Hashable k)
-    => Maybe (a, NominalDiffTime)
-    -> (a -> Maybe (a, Maybe NominalDiffTime))
-    -> k -> UTCTime -> TimeoutMap k a -> (TimeoutMap k a, Maybe UTCTime)
-mutate inserter updater = fmap snd ... mutateWith inserter ((, ()) . updater)
+    => Maybe (NominalDiffTime, a)
+    -> (a -> Maybe (Maybe NominalDiffTime, a))
+    -> UTCTime -> k -> TimeoutMap k a
+    -> (TimeoutMap k a, Maybe NominalDiffTime)
+mutate inserter updater = fmap fst .:. mutateWith inserter ((,) () . updater)
 
 
 ------------------------------------------------------------------------------
 mutateWith :: (Eq k, Hashable k)
-    => Maybe (a, NominalDiffTime)
-    -> (a -> (Maybe (a, Maybe NominalDiffTime), b))
-    -> k -> UTCTime -> TimeoutMap k a
-    -> (TimeoutMap k a, (Maybe b, Maybe UTCTime))
-mutateWith inserter updater key now = tmap (alterWith (expiry . go) key)
+    => Maybe (NominalDiffTime, a)
+    -> (a -> (b, Maybe (Maybe NominalDiffTime, a)))
+    -> UTCTime -> k -> TimeoutMap k a
+    -> (TimeoutMap k a, (Maybe NominalDiffTime, Maybe b))
+mutateWith inserter updater now = (swap .) . iso . H.alterF go
   where
-    go (Just (a, then_)) | then_ >= now = bimap time Just (updater a)
+    go (Just (then_, a)) | then_ >= now = case updater a of
+        (b, Nothing) -> ((empty, pure b), empty)
+        (b, Just (mtimeout, a')) -> ((pure timeout, pure b), pure (then', a'))
+          where
+            timeout = maybe id max mtimeout diff
+            then' = addUTCTime timeout now
       where
-        time = fmap (second (maybe then_ (max then_ . flip addUTCTime now)))
-    go _ = (second (flip addUTCTime now) <$> inserter, Nothing)
-    expiry (mutation, result) = (mutation, (result, snd <$> mutation))
+        diff = diffUTCTime then_ now
+    go _ = case inserter of
+        Nothing -> ((empty, empty), empty)
+        Just (timeout, a) -> ((pure timeout, empty), pure (then_, a))
+          where
+            then_ = addUTCTime timeout now
 
 
 ------------------------------------------------------------------------------
 clean :: UTCTime -> TimeoutMap k a -> TimeoutMap k a
-clean = tmap_ . H.filter . (. snd) . (<=)
+clean = (runIdentity .) . iso . (Identity .) . H.filter . (. fst) . (<=)
 
 
 ------------------------------------------------------------------------------
-tmap :: (HashMap k (a, UTCTime) -> (HashMap k (a, UTCTime), b))
-    -> TimeoutMap k a -> (TimeoutMap k a, b)
-tmap f (TimeoutMap m) = first TimeoutMap $ f m
+iso :: Functor f => (HashMap k (UTCTime, a) -> f (HashMap l (UTCTime, b)))
+    -> TimeoutMap k a -> f (TimeoutMap l b)
+iso f (TimeoutMap m) = TimeoutMap <$> f m
 
 
 ------------------------------------------------------------------------------
-tmap_ :: (HashMap k (a, UTCTime) -> HashMap k (a, UTCTime))
-    -> TimeoutMap k a -> TimeoutMap k a
-tmap_ f (TimeoutMap m) = TimeoutMap $ f m
-
-
-------------------------------------------------------------------------------
-alterWith :: (Eq k, Hashable k)
-    => (Maybe a -> (Maybe a, b)) -> k -> HashMap k a -> (HashMap k a, b)
-alterWith f k m = first (maybe delete_ insert_) $ f lookup_
-  where
-    lookup_ = H.lookup k m
-    delete_ = H.delete k m
-    insert_ v = H.insert k v m
-{-# INLINE alterWith #-}
-
-
-------------------------------------------------------------------------------
-(...) :: (d -> e) -> (a -> b -> c -> d) -> a -> b -> c -> e
-(...) f g a b c = f (g a b c)
-infixr 9 ...
+(.:.) :: (d -> e) -> (a -> b -> c -> d) -> a -> b -> c -> e
+(.:.) f g a b c = f (g a b c)
+infixr 8 .:.
