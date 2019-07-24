@@ -30,6 +30,10 @@ import           GHC.Generics (Generic)
 import           Prelude hiding (lookup)
 
 
+-- bifunctors ----------------------------------------------------------------
+import           Data.Biapplicative (biliftA2)
+
+
 -- deepseq -------------------------------------------------------------------
 import           Control.DeepSeq (NFData)
 
@@ -40,6 +44,12 @@ import           Data.Hashable (Hashable)
 
 -- hashable-time -------------------------------------------------------------
 import           Data.Hashable.Time ()
+
+
+-- semigroupoids -------------------------------------------------------------
+import           Data.Functor.Apply (Apply, liftF2)
+import           Data.Functor.Alt (Alt, (<!>))
+import           Data.Functor.Plus (Plus, zero)
 
 
 -- time ----------------------------------------------------------------------
@@ -58,6 +68,22 @@ newtype TimeoutMap k a = TimeoutMap (HashMap k (a, UTCTime))
     , NFData, Hashable, FromJSON
     , Functor
     )
+
+
+------------------------------------------------------------------------------
+instance (Eq k, Hashable k) => Apply (TimeoutMap k) where
+    liftF2 f (TimeoutMap a) (TimeoutMap b) =
+        TimeoutMap (liftF2 (biliftA2 f max) a b)
+
+
+------------------------------------------------------------------------------
+instance (Eq k, Hashable k) => Alt (TimeoutMap k) where
+    TimeoutMap a <!> TimeoutMap b = TimeoutMap $ a <> b
+
+
+------------------------------------------------------------------------------
+instance (Eq k, Hashable k) => Plus (TimeoutMap k) where
+    zero = TimeoutMap H.empty
 
 
 ------------------------------------------------------------------------------

@@ -25,9 +25,11 @@ library
   build-depends:
     aeson,
     base < 5,
+    bifunctors,
     deepseq,
     hashable,
     hashable-time,
+    semigroupoids,
     time,
     transformers,
     unordered-containers
